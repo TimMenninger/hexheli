@@ -1,0 +1,229 @@
+MODULE      SpeedController
+TITLE       'Electronic Speed Controller'
+
+"
+" This is the ABEL code that governs the PAL26V12 on the electronic speed controller
+" circuits.  Each motor has an address, so this will check for the corresponding
+" address and an active chip select.  When it sees it, it will send a signal to
+" latch the data bus onto a 74ALS573.  It will continuously create a PWM signal
+" based on constant input from the latch.  It will send the reset signal to the
+" motor controller chip on system reset.
+"
+" Revision History
+"    30 January 2017    Tim Menninger   Created
+
+
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Pins
+"
+"
+
+" Global clock
+CLK         pin  1;                 "  in  system clock
+
+" Global reset
+Reset       pin 14;                 "  in  active low system reset
+
+" Data bus that contains PWM -128 to 127
+Sign        pin  2;                 "  in  bit 7 (sign bit) of PWM width
+Width6      pin  3;                 "  in  bit 6 of PWM width
+Width5      pin  4;                 "  in  bit 5 of PWM width
+Width4      pin  5;                 "  in  bit 4 of PWM width
+Width3      pin  6;                 "  in  bit 3 of PWM width
+Width2      pin  7;                 "  in  bit 2 of PWM width
+Width1      pin  8;                 "  in  bit 1 of PWM width
+Width0      pin  9;                 "  in  bit 0 of PWM width
+
+" Address bus that is used for motor identity
+Addr3       pin 10;                 "  in  bit 3 of motor address
+Addr2       pin 11;                 "  in  bit 2 of motor address
+Addr1       pin 12;                 "  in  bit 1 of motor address
+Addr0       pin 13;                 "  in  bit 0 of motor address
+
+" Chip select for motors
+CS          pin 28;                 "  in  active low chip select
+
+" Latch signal when correct address
+Latch       pin 15  ISTYPE 'com';   " out  latches new data onto 74ALS573
+
+" Status signals from motor controller chip
+OTW         pin 23;                 "  in  active low when chip overheats
+FAULT       pin 24;                 "  in  active low when error forces reset
+
+" PWM output signals
+PWMA        pin 18  ISTYPE 'com';   " out  PWM signal to coil A
+PWMB        pin 17  ISTYPE 'com';   " out  PWM signal to coil B
+PWMC        pin 16  ISTYPE 'com';   " out  PWM signal to coil C
+
+" Coil reset signals
+ResetA      pin 22  ISTYPE 'com';   " out  active low reset to coil A
+ResetB      pin 20  ISTYPE 'com';   " out  active low reset to coil B
+ResetC      pin 19  ISTYPE 'com';   " out  active low reset to coil C
+
+" Unused pins
+"I/O/Q      pin 27;                   n/a  unused
+"I/O/Q      pin 26;                   n/a  unused
+"I/O/Q      pin 25;                   n/a  unused
+
+" Power pins
+"VCC        pin 7;                    pwr  VCC
+"GND        pin 21;                   pwr  GND
+
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Nodes
+"
+"
+" 7-bit PWM counter (signed PWM)
+PWMCount0   NODE    ISTYPE 'reg';   " bit 0 of the PWM counter
+PWMCount1   NODE    ISTYPE 'reg';   " bit 1 of the PWM counter
+PWMCount2   NODE    ISTYPE 'reg';   " bit 2 of the PWM counter
+PWMCount3   NODE    ISTYPE 'reg';   " bit 3 of the PWM counter
+PWMCount4   NODE    ISTYPE 'reg';   " bit 4 of the PWM counter
+PWMCount5   NODE    ISTYPE 'reg';   " bit 5 of the PWM counter
+PWMCount6   NODE    ISTYPE 'reg';   " bit 6 of the PWM counter
+
+" Keeps track of the phase.
+PhaseBit2   NODE    ISTYPE 'reg';   " bit 2 of phase tracker
+PhaseBit1   NODE    ISTYPE 'reg';   " bit 1 of phase tracker
+PhaseBit0   NODE    ISTYPE 'reg';   " bit 0 of phase tracker
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Macros
+"
+"
+" Address bus
+Addr        = [ Addr3..Addr0 ];
+
+" Data bus
+Width       = [ Width6..Width0 ];
+
+" The address of this motor
+Motor       = ^h0;
+
+" Decide when we want to latch
+DoLatch     = !((Addr == Motor) && !CS);
+
+" When the PWM LFSR counter is 0, it is stuck, so we need to detect that
+PWMZeroed   = !PWMCount7 & !PWMCount6 & !PWMCount5 & !PWMCount4 &
+              !PWMCount3 & !PWMCount2 & !PWMCount1 & !PWMCount0;
+
+" Define the phases, where the first letter is on and the second is countering
+PhaseBits   = [ PhaseBit2..PhaseBit0 ];
+PhaseAB     = ^b000;
+PhaseAC     = ^b001;
+PhaseBC     = ^b011;
+PhaseBA     = ^b010;
+PhaseCA     = ^b110;
+PhaseCB     = ^b100;
+
+" This makes comparison easier when deciding output or not
+Eq6         = (PWMCount6 & Width6) # (!PWMCount6 & !Width6);
+Eq5         = (PWMCount5 & Width5) # (!PWMCount5 & !Width5);
+Eq4         = (PWMCount4 & Width4) # (!PWMCount4 & !Width4);
+Eq3         = (PWMCount3 & Width3) # (!PWMCount3 & !Width3);
+Eq2         = (PWMCount2 & Width2) # (!PWMCount2 & !Width2);
+Eq1         = (PWMCount1 & Width1) # (!PWMCount1 & !Width1);
+Eq0         = (PWMCount0 & Width0) # (!PWMCount0 & !Width0);
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Equations
+"
+"
+EQUATIONS
+
+" Enable all outputs
+PWMA.OE         = 1;
+PWMB.OE         = 1;
+PWMC.OE         = 1;
+ResetA.OE       = 1;
+ResetB.OE       = 1;
+ResetC.OE       = 1;
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Generate reset signals to coils.  We only reset on system reset and if a motor
+" fails.
+"
+"
+ResetA          = Reset & FAULT;
+ResetB          = Reset & FAULT;
+ResetC          = Reset & FAULT;
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Update the PWM counter using 7-bit lfsr
+"
+"
+PWMCount.CLK    = CLK;
+PWMCount0      := PWMZeroed # (PWMCount6 $ PWMCount5); " Feedback
+PWMCount1      := PWMCount0; " Shift
+PWMCount2      := PWMCount1; " Shift
+PWMCount3      := PWMCount2; " Shift
+PWMCount4      := PWMCount3; " Shift
+PWMCount5      := PWMCount4; " Shift
+PWMCount6      := PWMCount5; " Shift
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Update the phase of the PWM
+"
+"
+WHEN !PWMZeroed THEN {
+    PhaseBits = PhaseBits;
+}
+ELSE WHEN Sign THEN {
+    WHEN (PhaseBits == PhaseAB) THEN { PhaseBits := PhaseAC; }
+    WHEN (PhaseBits == PhaseAC) THEN { PhaseBits := PhaseBC; }
+    WHEN (PhaseBits == PhaseBC) THEN { PhaseBits := PhaseBA; }
+    WHEN (PhaseBits == PhaseBA) THEN { PhaseBits := PhaseCA; }
+    WHEN (PhaseBits == PhaseCA) THEN { PhaseBits := PhaseCB; }
+    WHEN (PhaseBits == PhaseCB) THEN { PhaseBits := PhaseAB; }
+}
+ELSE {
+    WHEN (PhaseBits == PhaseAB) THEN { PhaseBits := PhaseCB; }
+    WHEN (PhaseBits == PhaseAC) THEN { PhaseBits := PhaseAB; }
+    WHEN (PhaseBits == PhaseBC) THEN { PhaseBits := PhaseAC; }
+    WHEN (PhaseBits == PhaseBA) THEN { PhaseBits := PhaseBC; }
+    WHEN (PhaseBits == PhaseCA) THEN { PhaseBits := PhaseBA; }
+    WHEN (PhaseBits == PhaseCB) THEN { PhaseBits := PhaseCA; }
+}
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+" Compare and set output accordingly, which is to say A, B and C alternate being on.
+" When each is off, consider the time it's off to be broken into four phases.  During
+" the middle two, the PWM output should be inverse.  Because the input is 7-bits, we
+" run twice before going to next coil.  Additionally, this means we can consider each
+" phase one cycle of the LFSR
+"
+"
+PWMOut          = (!PWMCount6 & DataBit6) #
+                  (!PWMCount5 & DataBit5 & Eq6) #
+                  (!PWMCount4 & DataBit4 & Eq6 & Eq5) #
+                  (!PWMCount3 & DataBit3 & Eq6 & Eq5 & Eq4) #
+                  (!PWMCount2 & DataBit2 & Eq6 & Eq5 & Eq4 & Eq3) #
+                  (!PWMCount1 & DataBit1 & Eq6 & Eq5 & Eq4 & Eq3 & Eq2) #
+                  (!PWMCount0 & DataBit0 & Eq6 & Eq5 & Eq4 & Eq3 & Eq2 & Eq1);
+
+" Set PWMA
+     WHEN (!PhaseBits2 && !PhaseBits1) THEN { PWMA =  PWMOut; }
+ELSE WHEN ( PhaseBits1 && !PhaseBits0) THEN { PWMA = !PWMOut; }
+ELSE                                        { PWMA =       0; }
+
+" Set PWMB
+     WHEN (!PhaseBits2 &&  PhaseBits1) THEN { PWMB =  PWMOut; }
+ELSE WHEN (!PhaseBits1 && !PhaseBits0) THEN { PWMB = !PWMOut; }
+ELSE                                        { PWMB =       0; }
+
+" Set PWMC
+     WHEN ( PhaseBits2 && !PhaseBits0) THEN { PWMC =  PWMOut; }
+ELSE WHEN (!PhaseBits2 &&  PhaseBits0) THEN { PWMC = !PWMOut; }
+ELSE                                        { PWMC =       0; }
+
+END     SpeedController
